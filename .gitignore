@@ -1,0 +1,6 @@
+!.gitignore
+.DS_Store
+misc/certs
+misc/commands.txt
+misc/commands-old.txt
+misc/apps-project-sa.json
