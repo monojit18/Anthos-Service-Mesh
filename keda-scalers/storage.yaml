@@ -1,0 +1,31 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: storage-gcp-credentials  
+spec:
+  podIdentity:
+    provider: gcp
+# apiVersion: keda.sh/v1alpha1
+# kind: TriggerAuthentication
+# metadata:
+#   name: storage-gcp-credentials
+# spec:
+#   secretTargetRef:
+#   - parameter: GoogleApplicationCredentials
+#     name: gcp-storage-secret
+#     key: GOOGLE_APPLICATION_CREDENTIALS_JSON
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: storage-gcp-scaledobject
+spec:
+  scaleTargetRef:
+    name: apacheapp-deploy
+  triggers:
+  - type: gcp-storage
+    authenticationRef:
+      name: storage-gcp-credentials
+    metadata:
+      bucketName: image-event-stg
+      targetObjectCount: "3"
