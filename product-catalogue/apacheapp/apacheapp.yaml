@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: apacheapp-deploy
+  name: apacheapp-deploy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: apacheapp-pod
+      mon: apacheapp-pod
+  template:
+    metadata:
+      labels:
+        app: apacheapp-pod
+        mon: apacheapp-pod
+    spec:
+      containers:
+      - image: "<repo-name>/httpd:latest"
+        name: apacheapp
+        ports:
+        - containerPort: 80        
+      nodeSelector:
+        cloud.google.com/gke-nodepool: gkeappspool
+      # serviceAccount: "smoke-sa"
+        
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: apacheapp-svc  
+spec:
+  ports:
+  - port: 80
+    protocol: TCP
+    targetPort: 80
+  selector:
+    app: apacheapp-pod
+    mon: apacheapp-pod
+  type: ClusterIP
