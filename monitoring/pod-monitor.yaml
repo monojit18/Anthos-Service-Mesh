@@ -1,0 +1,11 @@
+apiVersion: monitoring.googleapis.com/v1
+kind: ClusterPodMonitoring
+metadata:
+  name: pod-monitor
+spec:
+  selector:
+    matchLabels:
+      mon: apacheapp-pod
+  endpoints:
+  - port: metrics
+    interval: 30s
