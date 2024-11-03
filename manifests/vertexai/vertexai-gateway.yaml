@@ -1,0 +1,57 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: vertexai-gateway
+spec:
+  selector:
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*"
+---
+apiVersion: networking.istio.io/v1alpha3
+kind: VirtualService
+metadata:
+  name: vertexai-virtual-service
+spec:
+  hosts:
+  - "vertexai.<dns-name>"  
+  gateways:
+  - vertexai-gateway
+  http:
+  - match:
+    - uri:
+        regex: /languages/?(.*)
+    route:
+    - destination:
+        host: translateapp-svc
+        port:
+          number: 80
+  - match:  
+    - uri:
+        regex: /translate/?(.*)
+    route:
+    - destination:
+        host: translateapp-svc
+        port:
+          number: 80
+  - match:  
+    - uri:
+        regex: /action/text
+    route:
+    - destination:
+        host: buyergenieapp-svc
+        port:
+          number: 80
+  - match:  
+    - uri:
+        regex: /product/?(.*)
+    route:
+    - destination:
+        host: sellergenieapp-svc
+        port:
+          number: 80

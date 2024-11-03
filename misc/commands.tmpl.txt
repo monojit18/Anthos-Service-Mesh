@@ -1,1146 +1,306 @@
-BASEFOLDERPATH=""
-PROJECT_ID=
-OWNER=
-GSA=
-GSA_DISPLAY_NAME=
-REGION=
-ZONE=
-CLUSTER=
-CERTPATH=
-
-gcloud auth list
-gcloud config set account $OWNER
-gcloud services enable cloudresourcemanager.googleapis.com
-
-gcloud config set project $PROJECT_ID
-gcloud config set compute/region $REGION
-gcloud config set compute/zone $ZONE
-
-gcloud iam service-accounts create $GSA_DISPLAY_NAME --display-name=$GSA_DISPLAY_NAME
-gcloud iam service-accounts list
-gcloud iam service-accounts keys create $BASEFOLDERPATH/Misc/apps-project-sa.json --iam-account=$GSA
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$GSA --role=roles/owner
-
-gcloud auth activate-service-account $GSA --key-file=$BASEFOLDERPATH/Misc/apps-project-sa.json
-#gcloud config set account $GSA
-gcloud auth list
-
-Network
-===========
-gcloud compute networks create spoke-vpc --subnet-mode=custom --bgp-routing-mode=regional --mtu=1460
-#gcloud compute networks delete spoke-vpc
-
-gcloud compute networks subnets create spoke-gke-subnet --network=spoke-vpc --range=10.0.0.0/24 --region=$REGION
-#gcloud compute networks subnets delete spoke-gke-subnet --region=$REGION
-
-gcloud compute networks subnets create spoke-proxy-subnet --purpose=REGIONAL_MANAGED_PROXY --role=ACTIVE \
---network=spoke-vpc --range=10.0.2.0/24
-#gcloud compute networks subnets delete spoke-proxy-subnet
-
-gcloud compute networks subnets create spoke-psc-subnet	--purpose=PRIVATE_SERVICE_CONNECT --role=ACTIVE \
---network=spoke-vpc --range=10.0.1.0/24
-#gcloud compute networks subnets delete spoke-psc-subnet
-
-gcloud compute networks subnets update spoke-gke-subnet \
---add-secondary-ranges=pods-range=10.2.0.0/16,services-range=10.3.0.0/16
-#gcloud compute networks subnets delete spoke-gke-subnet
-
-gcloud compute firewall-rules create allow-egress --allow --destination-ranges=0.0.0.0/0 --direction=EGRESS --network=spoke-vpc
-gcloud compute firewall-rules create allow-http-ingress --allow=tcp:80,tcp:443 --source-ranges=0.0.0.0/0 --direction=INGRESS --network=spoke-vpc
-gcloud compute firewall-rules create allow-ssh --allow=tcp:22 --source-ranges=0.0.0.0/0 --direction=INGRESS --network=spoke-vpc
-
-gcloud compute firewall-rules create allow-spoke-health-check --network=spoke-vpc \
---action=allow --direction=ingress --source-ranges=130.211.0.0/22,35.191.0.0/16 --rules=tcp
-#gcloud compute firewall-rules delete allow-spoke-health-check
-
-gcloud compute firewall-rules create allow-spoke-proxies --network=spoke-vpc \
---action=allow --direction=ingress --source-ranges=10.0.2.0/24 --rules=tcp:80,tcp:443,tcp:8080
-#gcloud compute firewall-rules delete allow-spoke-proxies
-
-gcloud compute firewall-rules create allow-asm-egress --network=spoke-vpc \
---action=allow --direction=egress --source-ranges=10.0.2.0/24 --rules=tcp:80,tcp:443,tcp:8080,tcp:10250,tcp:15017,tcp:15014
-#gcloud compute firewall-rules delete allow-asm-egress
-
-gcloud compute firewall-rules list --filter="name~gke-$CLUSTER-[0-9a-z]*-master"
-#gcloud compute firewall-rules update FIREWALL_RULE_NAME --allow tcp:10250,tcp:443,tcp:15017,tcp:15014,tcp:8080
-gcloud compute firewall-rules update gke-gke-private-cluster-066839cd-master --allow tcp:10250,tcp:443,tcp:15017,tcp:15014,tcp:8080
-
-Artifact Repository
-=====================
-gcloud artifacts repositories create cloud-native-apps-repo --repository-format=docker --location=$REGION
-gcloud artifacts repositories describe cloud-native-apps-repo --location=$REGION
-#gcloud artifacts repositories delete cloud-native-apps-repo --location=$REGION
-
-gcloud auth configure-docker $REGION-docker.pkg.dev
-gcloud auth configure-docker
-
-GKE Private cluster
-================================================================================================
-================================================================================================
-gcloud auth activate-service-account $GSA --key-file="${BASEFOLDERPATH}/Misc/apps-project-sa.json"
-gcloud auth list
-gcloud config set project $PROJECT_ID
-gcloud config set compute/region $REGION
-gcloud config set compute/zone $ZONE
-
-gcloud compute firewall-rules create allow-spoke-master --network=spoke-vpc \
---action=allow --direction=ingress --source-ranges=10.0.7.0/28 --rules=tcp:80,tcp:443,tcp:8443,tcp:8080
-#gcloud compute firewall-rules delete allow-spoke-master
-
-gcloud compute networks subnets create jumper-server-spoke-subnet --network=spoke-vpc --range=10.0.8.0/24
-#gcloud compute networks subnets delete jumper-server-spoke-subnet
-
-gcloud compute firewall-rules create allow-spoke-jumper --network=spoke-vpc \
---action=allow --direction=ingress --source-ranges=10.0.8.0/24 --rules=tcp:80,tcp:443,tcp:8443,tcp:8080
-#gcloud compute firewall-rules delete allow-spoke-jumper
-
-gcloud compute addresses create gke-jump-server-ip --region=$REGION
-JUMPSERER_IP=$(gcloud compute addresses describe gke-jump-server-ip --format="get(address)")
-
-gcloud compute addresses create gke-jump-server-private-ip --subnet=jumper-server-spoke-subnet \
---addresses=10.0.8.100 --region=$REGION
-JUMPSERER_PRIVATE_IP=$(gcloud compute addresses describe gke-jump-server-private-ip --format="get(address)")
-#gcloud compute addresses delete gke-jump-server-private-ip
-
-### Jumper VM
-===============
-gcloud compute instances create jumper-server --image-family=debian-10 --image-project=debian-cloud \
---network=spoke-vpc --subnet=jumper-server-spoke-subnet --address=$JUMPSERER_IP \
---private-network-ip=$JUMPSERER_PRIVATE_IP --zone=$ZONE --project=$PROJECT_ID
-#gcloud compute instances delete jumper-server --zone=$ZONE --project=$PROJECT_SPOKE
-
-gcloud compute instances describe jumper-server --format="get(networkInterfaces[0].networkIP)" \
---project=$PROJECT_ID
-gcloud compute instances describe jumper-server --format="get(networkInterfaces[0].accessConfigs[0].natIP)" \
---project=$PROJECT_ID
-
-gcloud compute ssh --zone $ZONE jumper-server --project=$PROJECT_ID --tunnel-through-iap
-==========================================================================================
-gcloud container get-server-config --flatten="channels" --filter="channels.channel=REGULAR" \
-    --format="yaml(channels.channel,channels.defaultVersion)"
-
-gcloud container get-server-config --flatten="channels" --filter="channels.channel=REGULAR" \
-    --format="yaml(channels.channel,channels.validVersions)"
-
-gcloud container clusters create gke-private-cluster --release-channel=regular \
---region=$REGION --num-nodes=2 --enable-ip-alias \
---network=spoke-vpc --subnetwork=spoke-gke-subnet \
---cluster-secondary-range-name=pods-range --services-secondary-range-name=services-range \
---enable-master-authorized-networks --enable-private-nodes --enable-private-endpoint \
---service-account=$GSA --workload-pool=$PROJECT_ID.svc.id.goog \
---master-authorized-networks=$JUMPSERER_PRIVATE_IP/32 --master-ipv4-cidr=10.0.7.0/28
-#gcloud container clusters delete gke-private-cluster --region=$REGION
-
-#gcloud container clusters update $CLUSTER --enable-autoscaling --node-pool=default-pool --min-nodes=2 --max-nodes=4 --region=$REGION
-
-gcloud container clusters describe gke-private-cluster --region=$REGION
-
-gcloud compute addresses create gke-nat-ip --region=$REGION
-gcloud compute addresses describe gke-nat-ip --region=$REGION
-#gcloud compute addresses delete gke-nat-ip --region=$REGION
-
-gcloud compute routers create spoke-nat-rtr --network=spoke-vpc --region=$REGION
-#gcloud compute routers delete spoke-nat-rtr --region=$REGION
-
-gcloud compute routers nats create spoke-nat-gw --router=spoke-nat-rtr --region=$REGION \
---nat-external-ip-pool=gke-nat-ip --nat-all-subnet-ip-ranges --enable-logging
-gcloud compute routers nats describe spoke-nat-gw --router=spoke-nat-rtr
-#gcloud compute routers nats delete spoke-nat-gw --router=spoke-nat-rtr --region=$REGION
-
-scp -i ~/.ssh/google_compute_engine -r ./gateways/ <destination-vm>:~/asm/
-scp -i ~/.ssh/google_compute_engine -r ./monitoring/ <destination-vm>:~/asm/
-scp -i ~/.ssh/google_compute_engine -r ./online-boutique/ <destination-vm>:~/asm/
-scp -i ~/.ssh/google_compute_engine -r ./product-catalogue/ <destination-vm>:~/asm/
-
-scp -i ~/.ssh/google_compute_engine -r ./online-boutique/ <destination-vm>:~/asm/
-scp -i ~/.ssh/google_compute_engine -r /Users/monojitdatta/Workloads/Development/Projects/GCP-Projects/Helpers/DNS-Certs/<dns-name>/fullchain.pem <destination-vm>:~/certs/
-scp -i ~/.ssh/google_compute_engine -r /Users/monojitdatta/Workloads/Development/Projects/GCP-Projects/Helpers/DNS-Certs/<dns-name>/privkey.pem <destination-vm>:~/certs/
-================================================================================================================================
-##Access from Jump Server VM
-================================
-gcloud compute ssh --zone=$ZONE jumper-server --project=$PROJECT_ID --tunnel-through-iap
-======================
-PROJECT_ID=
-OWNER=
-GSA=
-GSA_DISPLAY_NAME=
-REGION=
-ZONE=
-CLUSTER=
-CERTPATH="./certs"
-ISTIOPATH="./asm/product-catalogue/istio-manifests"
-INGRESS_SERVICE_ATTACHMENT="istio-ingress-attachment"
-
-sudo apt-get install snapd
-sudo snap install core
-sudo apt install jq
-sudo apt install git
-sudo snap install kubectl --classic
-sudo snap install helm --classic
-sudo apt-get install google-cloud-sdk-gke-gcloud-auth-plugin
-
-gcloud auth list
-gcloud auth activate-service-account $GSA --key-file="./infrastructure-spoke-sa.json"
-#gcloud config set account $GSA
-gcloud config set project $PROJECT_ID
-gcloud config set compute/region $REGION
-gcloud config set compute/zone $ZONE
-
-gcloud projects add-iam-policy-binding $PROJECT_ID --member="serviceAccount:$GSA" --role="roles/container.admin"
-
-vi ~/.bashrc
-source ~/.bashrc
-
-gcloud container clusters get-credentials gke-private-cluster --region=$REGION --project=$PROJECT_ID
-
-k create secret tls gke-ingress-cert --cert="$CERTPATH/fullchain.pem" --key="$CERTPATH/privkey.pem"
-#k delete secrets/gke-ingress-cert
-
-kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-admin --user=$GSA
-================================================================================================================================
-
-Global Https LB to Service Mesh Gateway (through ASM Ingress gateway)
-===========================================================================
-gcloud services enable mesh.googleapis.com
-
-curl https://storage.googleapis.com/csm-artifacts/asm/asmcli_1.15 > asmcli
-mkdir asmmesh
-chmod +x asmcli
-
-./asmcli validate \
-  --project_id $PROJECT_ID \
-  --cluster_name $CLUSTER \
-  --cluster_location $REGION \
-  --fleet_id $PROJECT_ID
-
-./asmcli install \
-  --project_id $PROJECT_ID --cluster_name $CLUSTER \
-  --cluster_location $REGION --fleet_id $PROJECT_ID \
-  --output_dir asmmesh \
-  --ca mesh_ca --enable_all
-==========================
-
-k create namespace asm-ingress
-k label namespace asm-ingress istio-injection=enabled
-
-k apply -f ./asm/gateways/istio-ingressgateway -n asm-ingress
-#k delete -f ./asm/gateways/istio-ingressgateway -n asm-ingress
-
-k apply -f ./asm/gateways/istio-egressgateway -n asm-ingress
-#k delete -f ./asm/gateways/istio-egressgateway -n asm-ingress
-
-#Secret for TLS for all namespaces
-k create secret tls asm-tls-secret -n asm-ingress --cert="$CERTPATH/fullchain.pem" --key="$CERTPATH/privkey.pem"
-#k delete secret asm-tls-secret -n asm-ingress
-
-k create ns smoke
-k label namespace smoke istio-injection=enabled
-k label namespace istio-system istio-injection=enabled
-
-helm upgrade --install --create-namespace smoke-tests-chart ./asm/product-catalogue/smoke/smoke-tests-chart/ -n smoke \
--f ./asm/product-catalogue/smoke/smoke-tests-chart/values-smoke.yaml
-#helm uninstall smoke-tests-chart -n smoke
-
-k apply -f $ISTIOPATH/smoke-gateway.yaml -n smoke
-#k delete -f $ISTIOPATH/smoke-gateway.yaml -n smoke
-===========================================================================
-
-Global Https LB to Service Mesh Gateway (through Private Service Connect)
-===========================================================================
-gcloud compute service-attachments create $INGRESS_SERVICE_ATTACHMENT --region=$REGION \
---producer-forwarding-rule=a77dfed23e67b4ddda3e17333e8fd119 --connection-preference=ACCEPT_AUTOMATIC \
---nat-subnets=spoke-psc-subnet
-#gcloud compute service-attachments delete $INGRESS_SERVICE_ATTACHMENT
-
-gcloud compute network-endpoint-groups create gke-asm-neg \
-  --network-endpoint-type=private-service-connect \
-  --psc-target-service=$(gcloud compute service-attachments describe ${INGRESS_SERVICE_ATTACHMENT} --region=$REGION \
-  --format="get(selfLink)") \
-  --network=spoke-vpc \
-  --subnet=spoke-psc-subnet \
-  --region=$REGION
-#gcloud compute network-endpoint-groups delete gke-asm-neg --region=$REGION
-===========================================================================
-
-Enable Workload Identity
-==========================
-k create serviceaccount smoke-sa -n smoke
-#k delete serviceaccount smoke-sa -n smoke
-
-gcloud iam service-accounts add-iam-policy-binding $GSA \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[smoke/smoke-sa]"
-#cloud iam service-accounts remove-iam-policy-binding $GSA \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[smoke/smoke-sa]"
-
-k annotate serviceaccount smoke-sa -n smoke iam.gke.io/gcp-service-account=$GSA
-#k annotate serviceaccount smoke-sa -n smoke iam.gke.io/gcp-service-account-
-
-k exec -it po/<pod-name> -n smoke -- bash
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
-
-========================================================================================================================
-
-#k apply -f $ISTIOPATH/kiali-gateway.yaml -n istio-system
-#k delete -f $ISTIOPATH/kiali-gateway.yaml -n istio-system
-
-k create ns primary
-k label namespace primary istio-injection=enabled
-k apply -f $BASEFOLDERPATH/product-catalogue/bookinfo/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/bookinfo/ -n primary
-
-k apply -f $ISTIOPATH/primary-gateway.yaml -n primary
-#k delete -f $ISTIOPATH/primary-gateway.yaml -n primary
-
-k apply -f $BASEFOLDERPATH/product-catalogue/bluegreen/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/bluegreen/ -n primary
-k apply -f $ISTIOPATH/podinfo-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/podinfo-destination-rule.yaml -n primary
-
-k apply -f $BASEFOLDERPATH/product-catalogue/helloworld/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/helloworld/ -n primary
-k apply -f $ISTIOPATH/helloworld-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/helloworld-destination-rule.yaml -n primary
-/usr/bin/fortio load -c 5 -qps 0 -n 30 -loglevel Warning http://primary-mesh.<dns-name>/hello
-
-k apply -f $BASEFOLDERPATH/product-catalogue/httpbin/httpbin.yaml -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/httpbin/httpbin.yaml -n primary
-k apply -f $ISTIOPATH/httpbin-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/httpbin-destination-rule.yaml -n primary
-/usr/bin/fortio load -c 1 -qps 0 -n 10 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 2 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 4 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 7 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-
-#k apply -f $ISTIOPATH/primary-serviceentry.yaml -n primary
-#k delete -f $ISTIOPATH/primary-serviceentry.yaml -n primary
-
-Uninstall asm
-==============
-k get namespace <namespace> --show-labels
-k label namespace <namespace> istio.io/rev-
-k label namespace <namespace> istio-injection-
-k delete controlplanerevision -n istio-system
-k delete validatingwebhookconfiguration,mutatingwebhookconfiguration -l operator.istio.io/component=Pilot
-istioctl x uninstall --purge
-k delete namespace istio-system asm-system --ignore-not-found=true
-==========================================================================================================================================
-
-### Deploy Applications
-=========================
-k apply -f ./deployments/apacheapp-deploy.yaml
-k apply -f ./deployments/nginxapp-deploy.yaml
-
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-helm install nginx-ingress ingress-nginx/ingress-nginx -n nginx-ingress-ns --create-namespace
-# helm uninstall nginx-ingress -n nginx-ingress-ns
-
-## Private+Public LB
-========================
-cat <<EOF > ingress-config.yaml
-controller:
-  service:
-    internal:
-      enabled: true
-      annotations:        
-        cloud.google.com/load-balancer-type: "Internal"        
-EOF
-
-Global HTTPS LB to Nginx Ingress (Private Service Connect)
-==================================================================
-gcloud compute service-attachments create gke-nginx-ingress-attachment --region=$REGION --producer-forwarding-rule=a771a9d25c8a840dbade93dc1f05c8fc \
---connection-preference=ACCEPT_AUTOMATIC --nat-subnets=spoke-psc-subnet
-#gcloud compute service-attachments delete gke-nginx-ingress-attachment
-
-gcloud compute network-endpoint-groups create gke-nginx-ingress-neg --network-endpoint-type=private-service-connect \
---psc-target-service=$(gcloud compute service-attachments describe gke-nginx-ingress-attachment --region=$REGION --format="get(selfLink)") \
---network=spoke-vpc --subnet=spoke-psc-subnet --region=$REGION
-#gcloud compute network-endpoint-groups delete gke-nginx-ingress-neg --region=$REGION
-
-gcloud compute backend-services create gke-lb-bkend --load-balancing-scheme=EXTERNAL_MANAGED --protocol=HTTPS --global
-#gcloud compute backend-services delete gke-lb-bkend --global -q
-
-gcloud compute backend-services add-backend gke-lb-bkend --network-endpoint-group=gke-nginx-ingress-neg \
---network-endpoint-group-region=$REGION --global
-
-gcloud compute url-maps create  --default-service=gke-lb-bkend --global
-#gcloud compute url-maps delete gke-lb-url-map --global
-
-gcloud compute target-https-proxies create gke-lb-https-proxy --url-map=gke-lb-url-map --ssl-certificates=cloud-lb-cert-03032023
-#gcloud compute target-https-proxies delete gke-lb-https-proxy
-
-gcloud compute forwarding-rules create gke-lb-fwd-rule --load-balancing-scheme=EXTERNAL_MANAGED --network-tier=PREMIUM --address=gke-glb-pip \
---target-https-proxy=gke-lb-https-proxy --ports=443 --global
-#gcloud compute forwarding-rules delete gke-lb-fwd-rule --global
-
-gcloud compute url-maps export gke-lb-url-map --destination=./gke-lb-url-map.yaml --global
-gcloud compute url-maps import gke-lb-url-map --source=./gke-lb-url-map.yaml --global
-
-==========================================================================================================================================
-==========================================================================================================================================
-
-
-GKE Public Cluster
+#GKE Private Cluster
 ====================================================================================================
-BASEFOLDERPATH=
+#Set Local Varaibles
+====================
+BASEFOLDERPATH=""
+OWNER=
 PROJECT_ID=
-GSA=
-SPOKE_VPC_NAME=
+GSA_DISPLAY_NAME=
+GSA=$GSA_DISPLAY_NAME@$PROJECT_ID.iam.gserviceaccount.com
+VPC_NAME=
 CLUSTER_SUBNET_NAME=
 PROXY_SUBNET_NAME=
 PSC_SUBNET_NAME=
 JUMP_SERVER_SUBNET_NAME=
 CLUSTER=
 NODEPOOL=
-GKEFOLDERPATH=$BASEFOLDERPATH/GKE
-REGION=
-ZONE=
-CERTPATH=
+REGION=asia-southeast1
+ZONE=asia-southeast1-a
+IP_ADDRESS_NAME=
+CERTIFICATE_NAME=
+DOMAIN1_NAME=
+DOMAIN2_NAME=
+DOMAIN_LIST=$DOMAIN1_NAME,$DOMAIN2_NAME
+DNS_ZONE=
+AR_REPO=
+JUMP_SERVER_NAME=
+JUMPSERVER_IP=$(gcloud compute addresses describe gke-jump-server-ip --format="get(address)")
+JUMPSERVER_PRIVATE_IP=$(gcloud compute addresses describe gke-jump-server-private-ip --format="get(address)")
+
+
+gcloud auth list
+gcloud config set account $OWNER
+gcloud services enable cloudresourcemanager.googleapis.com
+
+gcloud config set project $PROJECT_ID
+
+gcloud services enable cloudresourcemanager.googleapis.com
+gcloud services enable compute.googleapis.com
+gcloud services enable container.googleapis.com
+gcloud services enable storage.googleapis.com
+gcloud services enable artifactregistry.googleapis.com
+gcloud services enable servicenetworking.googleapis.com
+gcloud services enable certificatemanager.googleapis.com
+gcloud services enable cloudbuild.googleapis.com
+
+gcloud config set compute/region $REGION
+gcloud config set compute/zone $ZONE
+
+#gcloud iam service-accounts create $GSA_DISPLAY_NAME --display-name=$GSA_DISPLAY_NAME
+gcloud iam service-accounts list
+#gcloud iam service-accounts keys create $BASEFOLDERPATH/Misc/$GSA_DISPLAY_NAME.json --iam-account=$GSA
+#gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$GSA --role=roles/owner
+
+gcloud auth activate-service-account $GSA --key-file=$BASEFOLDERPATH/misc/$GSA_DISPLAY_NAME.json
+#gcloud config set account $GSA
+gcloud auth list
 
 gcloud config set project $PROJECT_ID
 gcloud config set compute/region $REGION
 gcloud config set compute/zone $ZONE
 
-gcloud services enable container.googleapis.com --project=$PROJECT_ID
+Network
+====================================
+gcloud compute networks create $VPC_NAME --subnet-mode=custom --bgp-routing-mode=regional --mtu=1460
+#gcloud compute networks delete $VPC_NAME
 
+gcloud compute networks subnets create $CLUSTER_SUBNET_NAME --network=$VPC_NAME --range=10.0.20.0/22 --region=$REGION
+#gcloud compute networks subnets delete $CLUSTER_SUBNET_NAME --region=$REGION
+
+gcloud compute networks subnets create $PSC_SUBNET_NAME	--purpose=PRIVATE_SERVICE_CONNECT --role=ACTIVE \
+--network=$VPC_NAME --range=10.0.1.0/24
+#gcloud compute networks subnets delete $PSC_SUBNET_NAME
+
+gcloud compute networks subnets create $PROXY_SUBNET_NAME --purpose=REGIONAL_MANAGED_PROXY --role=ACTIVE \
+--network=$VPC_NAME  --range=10.0.2.0/24
+#gcloud compute networks subnets delete $PROXY_SUBNET_NAME
+
+gcloud compute networks subnets update $CLUSTER_SUBNET_NAME \
+--add-secondary-ranges=pods-range=10.8.0.0/16,services-range=10.9.0.0/16
+#gcloud compute networks subnets delete $CLUSTER_SUBNET_NAME
+
+gcloud compute networks subnets create $JUMP_SERVER_SUBNET_NAME --network=spoke-vpc --range=10.0.8.0/24
+#gcloud compute networks subnets delete $JUMP_SERVER_SUBNET_NAME
+
+gcloud compute networks subnets list --network=$VPC_NAME
+
+gcloud compute firewall-rules create allow-egress --allow --destination-ranges=0.0.0.0/0 --direction=EGRESS --network=$VPC_NAME
+gcloud compute firewall-rules create allow-http-ingress --allow=tcp:80,tcp:443 --source-ranges=0.0.0.0/0 --direction=INGRESS --network=$VPC_NAME
+gcloud compute firewall-rules create allow-ssh --allow=tcp:22 --source-ranges=0.0.0.0/0 --direction=INGRESS --network=$VPC_NAME
+
+gcloud compute firewall-rules create allow-spoke-health-check --network=$VPC_NAME \
+--action=allow --direction=ingress --source-ranges=130.211.0.0/22,35.191.0.0/16 --rules=tcp
+#gcloud compute firewall-rules delete allow-spoke-health-check
+
+gcloud compute firewall-rules create allow-spoke-proxies --network=$VPC_NAME \
+--action=allow --direction=ingress --source-ranges=10.0.2.0/24 --rules=tcp:80,tcp:443,tcp:8080
+#gcloud compute firewall-rules delete allow-spoke-proxies
+
+gcloud compute firewall-rules  list --format="table(name, network)" --filter="network=$VPC_NAME"
+
+#Jumper VM
+===============
+gcloud compute addresses create gke-jump-server-ip --region=$REGION
+JUMPSERVER_IP=$(gcloud compute addresses describe gke-jump-server-ip --format="get(address)")
+
+gcloud compute addresses create gke-jump-server-private-ip --subnet=jumper-server-spoke-subnet \
+--addresses=10.0.8.100 --region=$REGION
+JUMPSERVER_PRIVATE_IP=$(gcloud compute addresses describe gke-jump-server-private-ip --format="get(address)")
+#gcloud compute addresses delete gke-jump-server-private-ip
+
+gcloud compute instances create $JUMP_SERVER_NAME --machine-type=n2d-standard-2 \
+--image-family=ubuntu-pro-2004-lts --image-project=ubuntu-os-pro-cloud \
+--network=spoke-vpc --subnet=$JUMP_SERVER_SUBNET_NAME --address=$JUMPSERVER_IP \
+--private-network-ip=$JUMPSERVER_PRIVATE_IP --zone=$ZONE --project=$PROJECT_ID
+#gcloud compute instances delete $JUMP_SERVER_NAME --zone=asia-southeast1-b --project=$PROJECT_SPOKE
+
+gcloud compute instances describe $JUMP_SERVER_NAME --format="get(networkInterfaces[0].networkIP)" \
+--project=$PROJECT_ID
+gcloud compute instances describe $JUMP_SERVER_NAME --format="get(networkInterfaces[0].accessConfigs[0].natIP)" \
+--project=$PROJECT_ID
+
+Artifact Registry
+=====================
+gcloud artifacts repositories create $AR_REPO --repository-format=docker --location=$REGION
+gcloud artifacts repositories list --location=$REGION
+gcloud artifacts repositories describe $AR_REPO --location=$REGION
+#gcloud artifacts repositories delete $AR_REPO --location=$REGION
+
+Certificate
+============
+gcloud compute ssl-certificates create $CERTIFICATE_NAME --domains=$DOMAIN_LIST --global
+gcloud compute ssl-certificates list --global
+#gcloud compute ssl-certificates delete $CERTIFICATE_NAME
+
+#Copy necessary files to Jumper VM
+=====================================
+gcloud compute scp --recurse ./istio-gateways/ sa_103378869835739905684@$JUMP_SERVER_NAME:~/csm/
+gcloud compute scp --recurse ./apps sa_103378869835739905684@$JUMP_SERVER_NAME:~/csm
+gcloud compute scp --recurse ./manifests sa_103378869835739905684@$JUMP_SERVER_NAME:~/csm/
+gcloud compute scp --recurse ./monitoring sa_103378869835739905684@$JUMP_SERVER_NAME:~/csm/
+gcloud compute scp --recurse ./keda-scalers sa_103378869835739905684@$JUMP_SERVER_NAME:~/csm/
+
+#Connect to the Jumper VM
+===========================================================================
+gcloud compute ssh $JUMP_SERVER_NAME
+
+#Install Docker
+=========================
+# Add Docker's official GPG key:
+sudo apt-get update
+sudo apt-get install ca-certificates curl
+sudo install -m 0755 -d /etc/apt/keyrings
+sudo curl -fsSL https://download.docker.com/linux/ubuntu/gpg -o /etc/apt/keyrings/docker.asc
+sudo chmod a+r /etc/apt/keyrings/docker.asc
+
+# Add the repository to Apt sources:
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | \
+  sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+sudo apt-get update
+
+sudo apt-get install docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo groupadd docker
+sudo usermod -aG docker $USER
+#Log out and log back in so that your group membership is re-evaluated
+docker run hello-world
+
+#Install Kubectl
+=========================
+sudo snap install kubectl --classic
+kubectl version --client
+
+#Install Helm
+=========================
+curl https://baltocdn.com/helm/signing.asc | gpg --dearmor | sudo tee /usr/share/keyrings/helm.gpg > /dev/null
+sudo apt-get install apt-transport-https --yes
+echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/helm.gpg] https://baltocdn.com/helm/stable/debian/ all main" | sudo tee /etc/apt/sources.list.d/helm-stable-debian.list
+sudo apt-get update
+sudo apt-get install helm
+
+#Install gcloud CLI
+====================
+sudo apt-get update
+sudo apt-get install apt-transport-https ca-certificates gnupg curl
+curl https://packages.cloud.google.com/apt/doc/apt-key.gpg | sudo gpg --dearmor -o /usr/share/keyrings/cloud.google.gpg
+echo "deb [signed-by=/usr/share/keyrings/cloud.google.gpg] https://packages.cloud.google.com/apt cloud-sdk main" | sudo tee -a /etc/apt/sources.list.d/google-cloud-sdk.list
+sudo apt-get update && sudo apt-get install google-cloud-cli
+gcloud init
+sudo apt-get install google-cloud-sdk-gke-gcloud-auth-plugin
+
+#Create and Operate the Cluster
+================================
+#Set Local Varaibles (inside Jumper VM)
+================================================
+BASEFOLDERPATH="./csm"
+OWNER=
+PROJECT_ID=
+GSA_DISPLAY_NAME=
+GSA=$GSA_DISPLAY_NAME@$PROJECT_ID.iam.gserviceaccount.com
+VPC_NAME=
+CLUSTER_SUBNET_NAME=
+PROXY_SUBNET_NAME=
+PSC_SUBNET_NAME=
+JUMP_SERVER_SUBNET_NAME=
+CLUSTER=
+NODEPOOL=
+REGION=asia-southeast1
+ZONE=asia-southeast1-a
+IP_ADDRESS_NAME=
+CERTIFICATE_NAME=
+DOMAIN1_NAME=
+DOMAIN2_NAME=
+DOMAIN_LIST=$DOMAIN1_NAME,$DOMAIN2_NAME
+DNS_ZONE=
+AR_REPO=
+JUMP_SERVER_NAME=
+JUMPSERVER_IP=$(gcloud compute addresses describe gke-jump-server-ip --format="get(address)")
+JUMPSERVER_PRIVATE_IP=$(gcloud compute addresses describe gke-jump-server-private-ip --format="get(address)")
+
+#Create GKE Private Cluster
+====================================
 gcloud container clusters create $CLUSTER --release-channel=regular --region=$REGION \
---enable-ip-alias --enable-autoscaling \
---num-nodes=1 --min-nodes=1 --max-nodes=3 --max-pods-per-node=40 \
---network=$SPOKE_VPC_NAME --subnetwork=$CLUSTER_SUBNET_NAME \
+--enable-ip-alias --machine-type=n2d-standard-2 \
+--num-nodes=1 --max-pods-per-node=40 \
+--network=$VPC_NAME --subnetwork=$CLUSTER_SUBNET_NAME \
 --cluster-secondary-range-name=pods-range --services-secondary-range-name=services-range \
---service-account=$GSA --workload-pool=$PROJECT_ID.svc.id.goog
+--service-account=$GSA --workload-pool=$PROJECT_ID.svc.id.goog \
+--enable-master-authorized-networks --enable-private-nodes --enable-private-endpoint \
+--master-authorized-networks=$JUMPSERVER_PRIVATE_IP/32 --master-ipv4-cidr=10.0.7.0/28 \
+--addons GcsFuseCsiDriver,HttpLoadBalancing
 #gcloud container clusters delete $CLUSTER --region=$REGION
 
-gcloud container node-pools create $NODEPOOL --cluster=$CLUSTER \
---region=$REGION --num-nodes=1 --enable-autoscaling \
---min-nodes=1 --max-nodes=5 --max-pods-per-node=30 \
+gcloud container clusters get-credentials $CLUSTER --project=$PROJECT_ID --region=$REGION
+==========================================================================================
+#Configure CSM
+=========================
+gcloud container fleet mesh enable --project $PROJECT_ID
+gcloud container clusters update $CLUSTER --location $REGION --fleet-project $PROJECT_ID
+gcloud container fleet memberships list --project $PROJECT_ID
+
+gcloud container fleet mesh update --management automatic \
+--memberships $CLUSTER --project $PROJECT_ID --location $REGION
+#gcloud container clusters update $CLUSTER --clear-fleet-project --region=$REGION
+
+gcloud container fleet mesh describe --project $PROJECT_ID
+#Wait for the State to become 'ACTIVE'
+
+#Install Ingress and Egress Gateways
+==================================================
+k create namespace asm-ingress
+#k delete ns sm-ingress
+
+k label namespace asm-ingress istio-injection=enabled
+#k label namespace asm-ingress istio-injection-
+
+#Make necessaey changes in the istio-ingressgateway/service.yaml to deploy it as ILB or ClusterIP
+
+k apply -f $BASEFOLDERPATH/istio-gateways/istio-ingressgateway -n asm-ingress
+#k delete -f $BASEFOLDERPATH//istio-gatewayss/istio-ingressgateway -n asm-ingress
+
+k apply -f $BASEFOLDERPATH/istio-gateways/istio-egressgateway -n asm-ingress
+#k delete -f BASEFOLDERPATH/istio-gateways/istio-egressgateway -n asm-ingress
+
+#If istio-ingressgateway is deployed as ILB then create Service Attachments and PSC NEG
+====================================================================================================
+gcloud compute service-attachments create gke-asm-attachment --region=$REGION \
+--producer-forwarding-rule=a7cfa314cf0e348dab210e9fc0b1f763 \
+--connection-preference=ACCEPT_AUTOMATIC --nat-subnets=spoke-psc-subnet
+#gcloud compute service-attachments delete gke-asm-attachment
+
+gcloud compute network-endpoint-groups create gke-asm-neg --network-endpoint-type=private-service-connect \
+--psc-target-service=$(gcloud compute service-attachments describe gke-asm-attachment --region=$REGION --format="get(selfLink)") \
+--network=spoke-vpc --subnet=spoke-psc-subnet --region=$REGION
+#gcloud compute network-endpoint-groups delete gke-asm-neg --region=$REGION
+
+#Create new Nodepool to host application Workloads
+=====================================================
+gcloud container node-pools create $NODEPOOL --cluster=$CLUSTER --region=$REGION \
+--num-nodes=1 --enable-autoscaling --machine-type=n2d-standard-4 \
+--min-nodes=1 --max-nodes=50 --max-pods-per-node=30 \
 --service-account=$GSA
 #gcloud container node-pools delete gkeappspool --cluster=$CLUSTER --region=$REGION
 
-gcloud container clusters get-credentials $CLUSTER --region=$REGION --project=$PROJECT_ID
-
-##Public LB (Nginx Ingress)
-==============================
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-
-#helm install nginx-ingress ingress-nginx/ingress-nginx -n nginx-ingress-ns --create-namespace
-helm install nginx-ingress ingress-nginx/ingress-nginx -n nginx-ingress-ns
-#helm uninstall nginx-ingress -n nginx-ingress-ns
-
-##Private LB (Nginx Ingress)
-================================
-helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
-helm repo update
-
-#helm install -f internal-ingress-config.yaml nginx-ingress ingress-nginx/ingress-nginx -n nginx-ingress-ns --create-namespace
-#helm install -f $GKEFOLDERPATH/general/ingress/internal-nginx-ingress-gke-config.yaml nginx-ingress ingress-nginx/ingress-nginx -n nginx-ingress-ns --create-namespace
-helm install -f $GKEFOLDERPATH/general/ingress/internal-nginx-ingress-config.yaml nginx-ingress ingress-nginx/ingress-nginx -n nginx-ingress-ns --create-namespace
-#helm uninstall nginx-ingress -n nginx-ingress-ns
-
-gcloud compute ssh --zone $ZONE $PROXY_VM -- -L 8089:localhost:8080
-
-##Deploy microservices
+#Create Smoke namespace
 =========================
-#go install github.com/google/go-containerregistry/cmd/gcrane@latest
-
-gcrane cp gcr.io/google-samples/microservices-demo/adservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/adservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/cartservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/cartservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/checkoutservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/checkoutservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/currencyservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/currencyservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/emailservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/emailservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/frontend:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/frontend:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/loadgenerator:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/loadgenerator:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/paymentservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/paymentservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/productcatalogservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/productcatalogservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/recommendationservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/recommendationservice:v0.3.6
-
-gcrane cp gcr.io/google-samples/microservices-demo/shippingservice:v0.3.6 \
-$REGION-docker.pkg.dev/$PROJECT_SPOKE/cloud-native-repo/shippingservice:v0.3.6
-
-k apply -f ./namespaces/
-#k delete -f ./namespaces/
-
-k apply -f ./deployments/
-#k delete -f ./deployments/
-
-k apply -f ./services/
-#k delete -f ./services/
-
-k apply -f ./ingress/frontend-ingress.yaml
-#k delete -f ./ingress/frontend-ingress.yaml
-
-k apply -f ./general/helloworld-app-v2.yaml
-#k delete -f ./general/helloworld-app-v2.yaml
-
-k apply -f ./general/ingress/helloworld-app-v2-ingress.yaml
-#k delete -f ./general/ingress/helloworld-app-v2-ingress.yaml
-
-gcloud compute network-endpoint-groups list
-SSL Secrets
-============
-k create secret tls gke-ingress-cert --cert="./Misc/Certs/<dns-name>/fullchain.pem" \
---key="./Misc/Certs/<dns-name>/privkey.pem"
-
-Regional Http LB to GKE (through Private Service Connect)
-=======================================================================
-gcloud compute forwarding-rules list
-
-gcloud compute service-attachments create gke-ingress-attachment --region=$REGION \
---producer-forwarding-rule=a487a9f46f4c74ba28bb366f60911f20 --connection-preference=ACCEPT_AUTOMATIC \
---nat-subnets=$PSC_SUBNET_NAME
-#gcloud compute service-attachments delete gke-ingress-attachment
-
-gcloud compute network-endpoint-groups create gke-glb-neg \
-  --network-endpoint-type=private-service-connect \
-  --psc-target-service=$(gcloud compute service-attachments describe gke-ingress-attachment --region=$REGION \
-  --format="get(selfLink)") \
-   --network=$SPOKE_VPC_NAME \
-  --subnet=$PSC_SUBNET_NAME \
-  --region=$REGION
-#gcloud compute network-endpoint-groups delete gke-glb-neg --region=$REGION
-====================================================================================================
-
-Global Https LB to Nginx Ingress (through Private Service Connect)
-=======================================================================
-INGRESS_SERVICE_ATTACHMENT="nginx-ingress-attachment"
-#INGRESS_SERVICE_ATTACHMENT="gke-ingress-attachment"
-
-gcloud compute service-attachments create $INGRESS_SERVICE_ATTACHMENT --region=$REGION \
---producer-forwarding-rule=a4787838a217547bd887b44a20088d4e --connection-preference=ACCEPT_AUTOMATIC \
---nat-subnets=$PSC_SUBNET_NAME
-#gcloud compute service-attachments delete $INGRESS_SERVICE_ATTACHMENT
-
-gcloud compute network-endpoint-groups create gke-glb-neg \
-  --network-endpoint-type=private-service-connect \
-  --psc-target-service=$(gcloud compute service-attachments describe ${INGRESS_SERVICE_ATTACHMENT} --region=$REGION \
-  --format="get(selfLink)") \
-   --network=$SPOKE_VPC_NAME \
-  --subnet=$PSC_SUBNET_NAME \
-  --region=$REGION
-#gcloud compute network-endpoint-groups delete gke-glb-neg --region=$REGION
-
-gcloud compute addresses create gke-glb-address --ip-version=IPV4 --global
-gcloud compute addresses describe gke-glb-address --format="get(address)" --global
-#gcloud compute addresses delete gke-glb-address --global
-
-gcloud compute backend-services create gke-glb-backend --load-balancing-scheme=EXTERNAL_MANAGED --protocol=HTTP --global
-#gcloud compute backend-services delete gke-glb-backend --global
-
-gcloud compute backend-services add-backend gke-glb-backend \
-  --network-endpoint-group=gke-glb-neg --network-endpoint-group-region=$REGION --global
-
-gcloud compute url-maps create gke-glb-map --default-service=gke-glb-backend --global
-gcloud compute url-maps describe gke-glb-map --format=yaml
-gcloud compute url-maps import gke-glb-map --source=./gke-glb-map.yaml --global
-#gcloud compute url-maps delete gke-glb-map --global
-
-gcloud compute target-https-proxies create gke-glb-https-proxy --url-map=gke-glb-map --ssl-certificates=cloud-lb-cert --global
-#gcloud compute target-https-proxies delete gke-glb-https-proxy --global
-
-gcloud compute target-http-proxies create gke-glb-http-proxy --url-map=gke-glb-map --global
-#gcloud compute target-http-proxies delete gke-glb-http-proxy --global
-
-gcloud compute forwarding-rules create gke-fr-glb-endpoint \
-  --load-balancing-scheme=EXTERNAL_MANAGED \
-  --network-tier=PREMIUM \
-  --address=gke-glb-address \
-  --target-https-proxy=gke-glb-https-proxy \
-  --ports=443 --global
-#gcloud compute forwarding-rules delete gke-fr-glb-endpoint --globals
-==========================================================================================================================================
-
-Global Https LB to Service Mesh Gateway (through Private Service Connect)
-===========================================================================
-gcloud services enable mesh.googleapis.com
-
-#Run this in Cloud Shell
-==========================
-PROJECT_ID=
-OWNER==
-GSA==
-REGION==
-ZONE=
-CLUSTER=
-
-curl https://storage.googleapis.com/csm-artifacts/asm/asmcli_1.15 > asmcli
-
-gcloud container clusters get-credentials $CLUSTER --region=$REGION --project=$PROJECT_ID
-kubectl create clusterrolebinding cluster-admin-binding --clusterrole=cluster-admin --user=$GSA
-mkdir asmmesh
-
-./asmcli validate \
-  --project_id $PROJECT_ID \
-  --cluster_name $CLUSTER \
-  --cluster_location $REGION \
-  --fleet_id $PROJECT_ID
-
-chmod +x asmcli
-./asmcli install \
-  --project_id $PROJECT_ID --cluster_name $CLUSTER \
-  --cluster_location $REGION --fleet_id $PROJECT_ID \
-  --output_dir asmmesh \
-  --ca mesh_ca --enable_all 
-==========================
-Back to MAC CLI
-=================
-ISTIOPATH="$GKEFOLDERPATH/asm/product-catalogue/istio-manifests"
-INGRESS_SERVICE_ATTACHMENT="nginx-ingress-attachment"
-
-k create namespace asm-ngw-ns
-k label namespace asm-ngw-ns istio-injection=enabled
-
-#Change ServiceType: ClusterIP
-k apply -f $GKEFOLDERPATH/asm/gateways/istio-ingressgateway -n asm-ngw-ns
-#k delete -f $GKEFOLDERPATH/asm/gateways/istio-ingressgateway -n asm-ngw-ns
-
-k apply -f $GKEFOLDERPATH/asm/gateways/istio-egressgateway -n asm-ngw-ns
-#k delete -f $GKEFOLDERPATH/asm/gateways/istio-egressgateway -n asm-ngw-ns
-
-#Secret for TLS for all namespaces
-k create secret tls asm-tls-secret -n asm-ngw-ns --cert="$BASEFOLDERPATH/Misc/Certs/<dns-name>/fullchain.pem" --key="$BASEFOLDERPATH/Misc/Certs/<dns-name>/privkey.pem"
-#k delete secret asm-tls-secret -n asm-ngw-ns
-
-gcloud compute service-attachments create $INGRESS_SERVICE_ATTACHMENT --region=$REGION \
---producer-forwarding-rule=ab01711818d9c431a96d0f0019a62d13 --connection-preference=ACCEPT_AUTOMATIC \
---nat-subnets=$PSC_SUBNET_NAME
-#gcloud compute service-attachments delete $INGRESS_SERVICE_ATTACHMENT
-
-gcloud compute network-endpoint-groups create gke-glb-neg \
-  --network-endpoint-type=private-service-connect \
-  --psc-target-service=$(gcloud compute service-attachments describe ${INGRESS_SERVICE_ATTACHMENT} --region=$REGION \
-  --format="get(selfLink)") \
-   --network=$SPOKE_VPC_NAME \
-  --subnet=$PSC_SUBNET_NAME \
-  --region=$REGION
-#gcloud compute network-endpoint-groups delete gke-glb-neg --region=$REGION
-
-gcloud dns managed-zones update $PRIVATE_DNS_ZONE --networks=$SPOKE_VPC_NAME,asm-vpc \
---description="Private Zone"
-#gcloud dns managed-zones delete $PRIVATE_DNS_ZONE
-
-gcloud dns record-sets create smoke-mesh.internal.spoke.com. --rrdatas=14.0.0.100 --type=A --ttl=60 \
---zone=$PRIVATE_DNS_ZONE
-#gcloud dns record-sets delete smoke-mesh.internal.spoke.com. --type=A --zone=$PRIVATE_DNS_ZONE
-
-gcloud dns record-sets create primary-mesh.internal.spoke.com. --rrdatas=14.0.0.100 --type=A --ttl=60 \
---zone=$PRIVATE_DNS_ZONE
-#gcloud dns record-sets delete primary-mesh.internal.spoke.com. --type=A --zone=$PRIVATE_DNS_ZONE
-
 k create ns smoke
+#k delete ns smoke
+
 k label namespace smoke istio-injection=enabled
-k label namespace istio-system istio-injection=enabled
-
-Enable Workload Identity
-==========================
-k create serviceaccount smoke-sa -n smoke
-#k delete serviceaccount smoke-sa -n smoke
-
-gcloud iam service-accounts add-iam-policy-binding $GSA \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[smoke/smoke-sa]"
-#cloud iam service-accounts remove-iam-policy-binding $GSA \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[smoke/smoke-sa]"
-
-k annotate serviceaccount smoke-sa -n smoke iam.gke.io/gcp-service-account=$GSA
-#k annotate serviceaccount smoke-sa -n smoke iam.gke.io/gcp-service-account-
-
-k exec -it po/<pod-name> -n smoke -- bash
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
-
-========================================================================================================================
-
-helm upgrade --install --create-namespace smoke-tests-chart $GKEFOLDERPATH/asm/product-catalogue/smoke/smoke-tests-chart/ -n smoke \
--f $GKEFOLDERPATH/asm/product-catalogue/smoke/smoke-tests-chart/values-smoke.yaml
-#helm uninstall smoke-tests-chart -n smoke
-
-k apply -f $ISTIOPATH/smoke/smoke-gateway.yaml -n smoke
-#k delete -f $ISTIOPATH/smoke/smoke-gateway.yaml -n smoke
-
-#Secret for TLS for all namespaces
-k create secret tls asm-tls-secret -n asm-ngw-ns --cert="$ROOTPATH/misc/certs/<dns-name>/fullchain.pem" --key="$ROOTPATH/misc/certs/<dns-name>/privkey.pem"
-#k delete secret asm-tls-secret -n asm-ngw-ns
-
-k apply -f $BASEFOLDERPATH/addons
-#k delete -f $BASEFOLDERPATH/addons
-
-#k apply -f $ISTIOPATH/kiali/kiali-gateway.yaml -n istio-system
-#k delete -f $ISTIOPATH/kiali/kiali-gateway.yaml -n istio-system
-
-k create ns primary
-k label namespace primary istio-injection=enabled
-k apply -f $BASEFOLDERPATH/product-catalogue/bookinfo/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/bookinfo/ -n primary
-
-k apply -f $ISTIOPATH/primary/primary-gateway.yaml -n primary
-#k delete -f $ISTIOPATH/primary/primary-gateway.yaml -n primary
-
-k apply -f $BASEFOLDERPATH/product-catalogue/bluegreen/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/bluegreen/ -n primary
-k apply -f $ISTIOPATH/podinfo/podinfo-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/podinfo/podinfo-destination-rule.yaml -n primary
-
-k apply -f $BASEFOLDERPATH/product-catalogue/helloworld/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/helloworld/ -n primary
-k apply -f $ISTIOPATH/helloworld/helloworld-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/helloworld/helloworld-destination-rule.yaml -n primary
-/usr/bin/fortio load -c 5 -qps 0 -n 30 -loglevel Warning http://primary-mesh.<dns-name>/hello
-
-k apply -f $BASEFOLDERPATH/product-catalogue/httpbin/httpbin.yaml -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/httpbin/httpbin.yaml -n primary
-k apply -f $ISTIOPATH/httpbin/httpbin-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/httpbin/httpbin-destination-rule.yaml -n primary
-
-k exec -it <FORTIO_POD> -- 
-/usr/bin/fortio load -c 1 -qps 0 -n 10 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 2 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 4 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 7 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-
-#k apply -f $ISTIOPATH/primary/primary-serviceentry.yaml -n primary
-#k delete -f $ISTIOPATH/primary/primary-serviceentry.yaml -n primary
-==================================================================================================
-
-Global Https LB to Service Mesh Gateway (through ILB)
-========================================================
-gcloud services enable mesh.googleapis.com
-
-#Run this in Cloud Shell
-==========================
-PROJECT_ID=
-GSA=
-CLUSTER=
-NODEPOOL=
-REGION=
-ZONE=
-
-curl https://storage.googleapis.com/csm-artifacts/asm/asmcli_1.16 > asmcli
-
-gcloud auth activate-service-account $GSA --key-file="./apps-project-sa.json"
-alias k=kubectl
-gcloud container clusters get-credentials $CLUSTER --region=$REGION --project=$PROJECT_ID
-k create clusterrolebinding cluster-admin-binding --clusterrole=cluster-admin --user=$GSA
-#k delete clusterrolebindings/cluster-admin-binding
-mkdir asmmesh
-
-./asmcli validate \
-  --project_id $PROJECT_ID \
-  --cluster_name $CLUSTER \
-  --cluster_location $REGION \
-  --fleet_id $PROJECT_ID
-
-chmod +x asmcli
-./asmcli install \
-  --project_id $PROJECT_ID --cluster_name $CLUSTER \
-  --cluster_location $REGION --fleet_id $PROJECT_ID \
-  --output_dir asmmesh \
-  --ca mesh_ca --enable_all 
-==========================
-Back to MAC CLI
-=================
-ISTIOPATH="$BASEFOLDERPATH/istio-manifests"
-PRIVATE_DNS_ZONE="$PRIVATE_DNS_ZONE"
-DNS_Name="internal.spoke.com"
-SELF_SIGNED_CERT="internal-spoke-key"
-
-k create namespace asm-ngw-ns
-k label namespace asm-ngw-ns istio-injection=enabled
-k label namespace istio-system istio-injection=enabled
-
-Enable Workload Identity
-==========================
-k create serviceaccount smoke-sa -n smoke
-#k delete serviceaccount smoke-sa -n smoke
-
-gcloud iam service-accounts add-iam-policy-binding $GSA \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[smoke/smoke-sa]"
-#cloud iam service-accounts remove-iam-policy-binding $GSA \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[smoke/smoke-sa]"
-
-k annotate serviceaccount smoke-sa -n smoke iam.gke.io/gcp-service-account=$GSA
-#k annotate serviceaccount smoke-sa -n smoke iam.gke.io/gcp-service-account-
-
-k exec -it po/<pod-name> -n smoke -- bash
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
-
-========================================================================================================================
-
-#Change ServiceType: LoadBalancer
-k apply -f $BASEFOLDERPATH/gateways/istio-ingressgateway -n asm-ngw-ns
-#k delete -f $BASEFOLDERPATH/gateways/istio-ingressgateway -n asm-ngw-ns
-
-k apply -f $BASEFOLDERPATH/gateways/istio-egressgateway -n asm-ngw-ns
-#k delete -f $GKEFOLDERPATH/asm/gateways/istio-egressgateway -n asm-ngw-ns
-
-#Secret for TLS for all namespaces
-k create secret tls asm-tls-secret -n asm-ngw-ns \
---cert="$BASEFOLDERPATH/misc/certs/<dns-name>/fullchain.pem" --key="$BASEFOLDERPATH/misc/certs/<dns-name>/privkey.pem"
-#k delete secret asm-tls-secret -n asm-ngw-ns
-
-gcloud projects add-iam-policy-binding $PROJECT_ID --member=serviceAccount:$GSA --role=roles/artifactregistry.reader
-
-gcloud dns managed-zones create $PRIVATE_DNS_ZONE --description="Private Zone" --dns-name=$DNS_Name \
---networks=$SPOKE_VPC_NAME --visibility=private
-#gcloud dns managed-zones delete $PRIVATE_DNS_ZONE
-
-gcloud dns record-sets create smoke.$DNS_Name. --rrdatas=10.0.0.100 --type=A --ttl=60 \
---zone=$PRIVATE_DNS_ZONE
-#gcloud dns record-sets delete smoke.$DNS_Name. --type=A --zone=$PRIVATE_DNS_ZONE
-
-gcloud dns record-sets create primary.$DNS_Name. --rrdatas=10.0.0.100 --type=A --ttl=60 \
---zone=$PRIVATE_DNS_ZONE
-#gcloud dns record-sets delete primary.$DNS_Name. --type=A --zone=$PRIVATE_DNS_ZONE
-
-gcloud dns record-sets create boutique.$DNS_Name. --rrdatas=10.0.0.100 --type=A --ttl=60 \
---zone=$PRIVATE_DNS_ZONE
-#gcloud dns record-sets delete boutique.$DNS_Name. --type=A --zone=$PRIVATE_DNS_ZONE
-
-##Self-signed certificate
-===========================
-openssl genrsa -out $BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.key 2048
-
-openssl req -new -key $BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.key -out $BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.csr \
--config $BASEFOLDERPATH/misc/certs/$DNS_Name/ossl-conf.txt
-
-openssl x509 -req -signkey $BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.key \
--in $BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.csr -out $BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.pem \
--extfile $BASEFOLDERPATH/misc/certs/$DNS_Name/ossl-conf.txt -extensions extension_requirements \
--days 360
-
-gcloud compute ssl-certificates create cloud-internal-lb-cert --certificate=$BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.pem \
---private-key=$BASEFOLDERPATH/misc/certs/$DNS_Name/$SELF_SIGNED_CERT.key --region=$REGION
-
-#gcloud compute ssl-certificates delete cloud-internal-lb-cert --region=$REGION
-===========================
-k create ns smoke
-k label namespace smoke istio-injection=enabled
-
-helm upgrade --install --create-namespace smoke-tests-chart $BASEFOLDERPATH/product-catalogue/smoke/smoke-tests-chart/ -n smoke \
--f $BASEFOLDERPATH/product-catalogue/smoke/smoke-tests-chart/values-smoke.yaml
-#helm uninstall smoke-tests-chart -n smoke
-
-k apply -f $BASEFOLDERPATH/product-catalogue/apacheapp/ -n smoke
-#k delete -f $ISTIOPATH/product-catalogue/apacheapp -n smoke
-
-k apply -f $ISTIOPATH/smoke/smoke-internal-gateway.yaml -n smoke
-#k delete -f $ISTIOPATH/smoke/smoke-internal-gateway.yaml -n smoke
-
-k create ns boutique
-k label namespace boutique istio-injection=enabled
-
-k apply -f $BASEFOLDERPATH/online-boutique/ -n boutique
-#k delete -f $BASEFOLDERPATH/online-boutique/ -n boutique
-
-k apply -f $ISTIOPATH/boutique/boutique-internal-gateway.yaml -n boutique
-#k delete -f $ISTIOPATH/boutique/boutique-internal-gateway.yaml -n boutique
-
-#Secret for TLS for all namespaces
-k create secret tls asm-tls-secret -n asm-ngw-ns --cert="$ROOTPATH/misc/certs/<dns-name>/fullchain.pem" --key="$ROOTPATH/misc/certs/<dns-name>/privkey.pem"
-#k delete secret asm-tls-secret -n asm-ngw-ns
-
-k apply -f $BASEFOLDERPATH/addons
-#k delete -f $BASEFOLDERPATH/addons
-
-#k apply -f $ISTIOPATH/kiali/kiali-gateway.yaml -n istio-system
-#k delete -f $ISTIOPATH/kiali/kiali-gateway.yaml -n istio-system
-
-k create ns primary
-k label namespace primary istio-injection=enabled
-
-k apply -f $BASEFOLDERPATH/product-catalogue/bookinfo/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/bookinfo/ -n primary
-
-k apply -f $ISTIOPATH/primary/primary-internal-gateway.yaml -n primary
-#k delete -f $ISTIOPATH/primary/primary-internal-gateway.yaml -n primary
-
-k apply -f $BASEFOLDERPATH/product-catalogue/bluegreen/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/bluegreen/ -n primary
-k apply -f $ISTIOPATH/podinfo/podinfo-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/podinfo/podinfo-destination-rule.yaml -n primary
-
-k apply -f $BASEFOLDERPATH/product-catalogue/helloworld/ -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/helloworld/ -n primary
-k apply -f $ISTIOPATH/helloworld/helloworld-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/helloworld/helloworld-destination-rule.yaml -n primary
-/usr/bin/fortio load -c 5 -qps 0 -n 30 -loglevel Warning http://primary-mesh.<dns-name>/hello
-
-k apply -f $BASEFOLDERPATH/product-catalogue/httpbin/httpbin.yaml -n primary
-#k delete -f $BASEFOLDERPATH/product-catalogue/httpbin/httpbin.yaml -n primary
-k apply -f $ISTIOPATH/httpbin/httpbin-destination-rule.yaml -n primary
-#k delete -f $ISTIOPATH/httpbin/httpbin-destination-rule.yaml -n primary
-/usr/bin/fortio load -c 1 -qps 0 -n 10 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 2 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 4 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-/usr/bin/fortio load -c 7 -qps 0 -n 20 -loglevel Warning http://primary-mesh.<dns-name>/httpbin
-
-#k apply -f $ISTIOPATH/primary/primary-serviceentry.yaml -n primary
-#k delete -f $ISTIOPATH/primary/primary-serviceentry.yaml -n primary
-==================================================================================================
-
-Uninstall asm
-==============
-k get namespace asm-ngw-ns --show-labels
-k label namespace asm-ngw-ns istio.io/rev-
-k label namespace asm-ngw-ns istio-injection-
-k delete controlplanerevision -n istio-system
-k delete validatingwebhookconfiguration,mutatingwebhookconfiguration -l operator.istio.io/component=Pilot
-istioctl x uninstall --purge
-k delete namespace istio-system asm-system --ignore-not-found=true
-==========================================================================================================================================
-
-
-Apigee X
-===============
-gcloud auth activate-service-account --key-file="./infrastructure-spoke-sa.json"
-
-AUTH="Authorization: Bearer $(gcloud auth print-access-token)"
-RUNTIME_LOCATION=$REGION
-ANALYTICS_REGION=$REGION
-APIGEE_SUBVNET_NAME=spoke-apigee-subnet
-APIGEE_TROUBLESHOOT_SUBVNET_NAME=spoke-apigee-troublesdhoot-subnet
-
-echo $AUTH
-echo $PROJECT_ID
-echo $RUNTIME_LOCATION
-echo $ANALYTICS_REGION
-
-gcloud compute networks subnets create $APIGEE_SUBVNET_NAME --network=$SPOKE_VPC_NAME --range=10.0.12.0/22
-#gcloud compute networks subnets delete $APIGEE_SUBVNET_NAME
-
-gcloud compute networks subnets create $APIGEE_TROUBLESHOOT_SUBVNET_NAME \
---network=$SPOKE_VPC_NAME --range=10.0.16.0/28
-#gcloud compute networks subnets delete $APIGEE_TROUBLESHOOT_SUBVNET_NAME
-
-gcloud services enable \
-apigee.googleapis.com servicenetworking.googleapis.com compute.googleapis.com cloudkms.googleapis.com \
---project=$PROJECT_ID
-
-APIGEE_RANGE_NAME=apigeex-range
-APIGEE_MANAGED_RANGE_NAME=apigeex-managed-range
-NETWORK_NAME=$SPOKE_VPC_NAME
-
-gcloud compute addresses create $APIGEE_RANGE_NAME \
-  --global \
-  --prefix-length=22 \
-  --network=$NETWORK_NAME --purpose=VPC_PEERING --project=$PROJECT_ID
-#gcloud compute addresses delete $APIGEE_RANGE_NAME --global
-
-gcloud compute addresses create $APIGEE_MANAGED_RANGE_NAME \
-  --global \
-  --prefix-length=28 \
-  --network=$NETWORK_NAME --purpose=VPC_PEERING --project=$PROJECT_ID
-#gcloud compute addresses delete $APIGEE_MANAGED_RANGE_NAME --global
-
-gcloud services vpc-peerings connect \
-  --service=servicenetworking.googleapis.com \
-  --network=$NETWORK_NAME --ranges=$APIGEE_RANGE_NAME,$APIGEE_MANAGED_RANGE_NAME --project=$PROJECT_ID
-#gcloud services vpc-peerings delete servicenetworking-googleapis-com --network=$NETWORK_NAME
-
-gcloud alpha apigee organizations provision \
-  --runtime-location=$RUNTIME_LOCATION \
-  --analytics-region=$ANALYTICS_REGION \
-  --authorized-network=$NETWORK_NAME --project=$PROJECT_ID
-#gcloud alpha apigee organizations delete $PROJECT_SPOKE
-
-gcloud services peered-dns-domains create gke-internal-dns --network=$SPOKE_VPC_NAME --service="servicenetworking.googleapis.com" \
---dns-suffix=internal.spoke.com.
-
-gcloud services peered-dns-domains list --network=$SPOKE_VPC_NAME
-
-Access from Jumper VM in Spoke
-================================
-gcloud compute instances create gke-jumper-client --image-family=debian-10 --image-project=debian-cloud --tags=allow-ssh \
---network=$SPOKE_VPC_NAME --subnet=$CLUSTER_SUBNET_NAME --zone=$ZONE
-#gcloud compute instances delete gke-jumper-client --zone=$ZONE
-
-gcloud compute ssh --zone $ZONE gke-jumper-client --project=$PROJECT_SPOKE
-
-gcloud auth activate-service-account --key-file="./infrastructure-spoke-sa.json"
-
-sudo apt-get update -y
-sudo apt-get install -y jq
-
-AUTH="Authorization: Bearer $(gcloud auth print-access-token)"
-PROJECT_ID=$PROJECT_SPOKE
-ENV_GROUP_HOSTNAME=$(curl -H "$AUTH" https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups -s | jq -r '.environmentGroups[0].hostnames[0]')
-INTERNAL_LOAD_BALANCER_IP=$(curl -H "$AUTH" https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/instances -s | jq -r '.instances[0].host')
-
-echo $AUTH
-echo $PROJECT_ID
-echo $ENV_GROUP_HOSTNAME
-echo $INTERNAL_LOAD_BALANCER_IP
-
-curl -i -k -H "Host: $ENV_GROUP_HOSTNAME" https://$INTERNAL_LOAD_BALANCER_IP/hello-world
-==================================================================================================
-
-Global Https LB to Apigee (External Routing)
-==============================================
-
-curl -i -X GET -H "$AUTH" "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/instances"
-
-NEG_NAME="apigee-lb-neg"
-TARGET_SERVICE=""
-SUBNET_NAME="$PSC_SUBNET_NAME"
-
-gcloud compute network-endpoint-groups create $NEG_NAME \
-  --network-endpoint-type=private-service-connect \
-  --psc-target-service=$TARGET_SERVICE \
-  --region=$RUNTIME_LOCATION \
-  --network=$NETWORK_NAME \
-  --subnet=$SUBNET_NAME \
-  --project=$PROJECT_ID
-#gcloud compute network-endpoint-groups delete $NEG_NAME --region=$RUNTIME_LOCATION
-
-gcloud compute addresses create $ADDRESS_NAME --ip-version=IPV4 --global --project=$PROJECT_ID
-#gcloud compute addresses delete $ADDRESS_NAME --global
-
-gcloud compute addresses describe $ADDRESS_NAME --format="get(address)" --global --project=$PROJECT_ID
-
-gcloud compute backend-services create $BACKEND_SERVICE_NAME \
-  --load-balancing-scheme=EXTERNAL_MANAGED \
-  --protocol=HTTPS \
-  --global --project=$PROJECT_ID
-#gcloud compute backend-services delete $BACKEND_SERVICE_NAME --global
-
-gcloud compute backend-services add-backend $BACKEND_SERVICE_NAME \
-  --network-endpoint-group=$NEG_NAME \
-  --network-endpoint-group-region=$RUNTIME_LOCATION \
-  --global --project=$PROJECT_ID
-
-gcloud compute url-maps create $URL_MAP_NAME \
-  --default-service=$BACKEND_SERVICE_NAME \
-  --global --project=$PROJECT_ID
-#gcloud compute url-maps delete $URL_MAP_NAME --global
-
-gcloud compute ssl-certificates describe $CERTIFICATE \
-   --global \
-   --format="get(name,managed.status, managed.Status)"
-
-gcloud compute target-https-proxies create $PROXY_NAME \
-  --url-map=$URL_MAP_NAME \
-  --ssl-certificates=$CERTIFICATE --project=$PROJECT_ID
-#gcloud compute target-https-proxies delete $PROXY_NAME --global
-
-gcloud compute forwarding-rules create $FWD_RULE \
-  --load-balancing-scheme=EXTERNAL_MANAGED \
-  --network-tier=PREMIUM \
-  --address=$ADDRESS_NAME \
-  --target-https-proxy=$PROXY_NAME \
-  --ports=443 \
-  --global --project=$PROJECT_ID
-#gcloud compute forwarding-rules delete $FWD_RULE --global
-
-curl "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups/eval-group" \
-  -H "$AUTH" \
-  -X PATCH \
-  -H "Content-Type:application/json" \
-  -d '{
-    "hostnames":["'apigext.<dns-name>'"]
-  }'
-
-curl -H "$AUTH" \
-  "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/envgroups/eval-group/attachments"
-
-curl -i -H "$AUTH" \
-  "https://apigee.googleapis.com/v1/organizations/$PROJECT_ID/environments/eval/apis/nginx-app/revisions/4/deployments"
-
-curl -i -k https://gke-external.<dns-name>/hello-world
-
-==================================================================================================
-RBAC
-======
-
-gcloud container clusters update $CLUSTER --region=$REGION \
---security-group="gke-security-groups@monojitdatta.altostrat.com"
-
-
-===================================================================================================
-Deploying KEDA
-======================
-helm repo add kedacore https://kedacore.github.io/charts
-helm repo update
-k create namespace keda
-helm install keda kedacore/keda --namespace keda
-
-gcloud iam service-accounts create keda-operator --project=$PROJECT_ID
-#gcloud iam service-accounts delete keda-operator@$PROJECT_ID.iam.gserviceaccount.com --project=$PROJECT_ID
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member "serviceAccount:keda-operator@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role "roles/monitoring.viewer"
-#gcloud projects remove-iam-policy-binding $PROJECT_ID \
-    --member "serviceAccount:keda-operator@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role "roles/monitoring.viewer"
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member "serviceAccount:keda-operator@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role "roles/storage.admin"
-#gcloud projects remove-iam-policy-binding $PROJECT_ID \
-    --member "serviceAccount:keda-operator@$PROJECT_ID.iam.gserviceaccount.com" \
-    --role "roles/storage.admin"
-
-gcloud iam service-accounts add-iam-policy-binding keda-operator@$PROJECT_ID.iam.gserviceaccount.com \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[keda/keda-operator]"
-#gcloud iam service-accounts remove-iam-policy-binding keda-operator@$PROJECT_ID.iam.gserviceaccount.com \
-    --role=roles/iam.workloadIdentityUser \
-    --member="serviceAccount:$PROJECT_ID.svc.id.goog[keda/keda-operator]"
-
-k annotate serviceaccount keda-operator --namespace keda \
-iam.gke.io/gcp-service-account=keda-operator@$PROJECT_ID.iam.gserviceaccount.com
-#k annotate serviceaccount keda-operator --namespace keda iam.gke.io/gcp-service-account-
-
-k exec -it po/<pod-name> -n smoke -- bash
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/email
-curl -H "Metadata-Flavor: Google" http://169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token
-
-Uninstall KEDA
-================
-kubectl delete $(kubectl get scaledobjects.keda.sh,scaledjobs.keda.sh -A \
-  -o jsonpath='{"-n "}{.items[*].metadata.namespace}{" "}{.items[*].kind}{"/"}{.items[*].metadata.name}{"\n"}')
-helm uninstall keda -n keda
-
-Managed Prometheus
-====================
-gcloud container clusters update $CLUSTER --region=$REGION --enable-managed-prometheus
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
---member "serviceAccount:$GSA" --role "roles/monitoring.metricWriter"
-
-================================================================================
-
-
-gcloud projects add-iam-policy-binding $PROJECT_ID \
-    --member "serviceAccount:$GSA" \
-    --role "roles/container.clusterViewer"
-
-
-==================================================================================================
-
+#k label namespace smoke istio-injection-
+
+#Deploy Test applications for sanity checks
+=================================================
+helm upgrade --install --create-namespace smoke-tests-chart-nginx \
+$BASEFOLDERPATH/apps/smoke/smoke-tests-chart/ -n smoke \
+-f $BASEFOLDERPATH/apps/smoke/smoke-tests-chart/values-nginx.yaml
+#helm uninstall smoke-tests-chart-nginx -n smoke
+
+helm upgrade --install --create-namespace smoke-tests-chart-apache \
+$BASEFOLDERPATH/apps/smoke/smoke-tests-chart/ -n smoke \
+-f $BASEFOLDERPATH/apps/smoke/smoke-tests-chart/values-apache.yaml
+#helm uninstall smoke-tests-chart-apache -n smoke
+
+k apply -f $BASEFOLDERPATH/manifests/smoke/smoke-gateway.yaml -n smoke
+#k delete -f $BASEFOLDERPATH/manifests/smoke/smoke-gateway.yaml -n smoke

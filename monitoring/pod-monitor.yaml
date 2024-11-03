@@ -1,11 +1,12 @@
 apiVersion: monitoring.googleapis.com/v1
-kind: ClusterPodMonitoring
+kind: PodMonitoring
 metadata:
   name: pod-monitor
+  namespace: smoke
 spec:
   selector:
     matchLabels:
       mon: apacheapp-pod
   endpoints:
-  - port: metrics
+  - port: metrics    
     interval: 30s
