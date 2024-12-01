@@ -7,3 +7,4 @@ misc/commands-old.txt
 misc/apps-project-sa.json
 misc/*.yaml
 misc/**/*.yaml
+**/values
