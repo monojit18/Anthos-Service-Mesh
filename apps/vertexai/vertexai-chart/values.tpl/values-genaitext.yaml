@@ -30,7 +30,9 @@ deployment:
     - name: GENAI_PUBLISHER
       value: google
     - name: GENAI_API_ENDPOINT
-      value: us-central1-aiplatform.googleapis.com    
+      value: us-central1-aiplatform.googleapis.com  
+    - name: GENAI_GEMINI_TEXT_MODEL
+      value: gemini-1.5-pro  
     - name: PROJECT_ID
       value: <project_id>
 service:
