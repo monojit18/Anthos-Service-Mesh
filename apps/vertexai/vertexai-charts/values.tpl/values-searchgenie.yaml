@@ -1,0 +1,53 @@
+deployment:
+  name: searchgenieapp-deploy
+  serviceAccount: vertexai-sa
+  labels:
+    app: searchgenieapp-deploy 
+    version: v1
+  selectorLabels:
+    app: searchgenieapp-pod
+    version: v1
+  replicas: 1
+  strategyType: RollingUpdate
+  maxSurge: 1
+  maxUnavailable: 0
+  nodeSelector:
+    cloud.google.com/gke-nodepool: worker-pool
+  containers:
+  - name: searchgenie-app
+    image: "<repo-name>/searchgenielib:v1.0"
+    imagePullPolicy: Always
+    memoryRequest: "500Mi"
+    cpuRequest: "500m"
+    memoryLimit: "1Gi"
+    cpuLimit: "1"
+    containerPorts: [6077]
+    envVars:    
+    - name: DATAPROCESSORLIB_HOST
+      value: http://dataprocessorapp-svc.vertexai.svc
+    - name: BIGQUERYLIB_HOST
+      value: http://bigqueryapp-svc.utilities.svc
+    - name: GENAI_TEXTLIB_HOST
+      value: http://genaitextapp-svc.vertexai.svc
+    - name: DATAPROCESSOR_DOCUMENT_SPLIT_SIZE
+      value: 1000
+    - name: DATAPROCESSOR_SITE_SPLIT_SIZE
+      value: 5000
+    - name: BIG_QUERY_DATASET_ID
+      value: vertexai_search_ds_2512024
+    - name: BIG_QUERY_TABLE_ID
+      value: search_builder_embeddings
+    - name: BIG_QUERY_VECTOR_SEARCH_QUERY_COLUMN
+      value: text_embedding
+    - name: PROJECT_ID
+      value: <project-id>
+service:
+  name: searchgenieapp-svc
+  selector:
+    app: searchgenieapp-pod
+  type: ClusterIP
+  ports:
+  - protocol: TCP
+    name: http
+    port: 80
+    targetPort: 6077

@@ -1,0 +1,43 @@
+deployment:
+  name: dataprocessorapp-deploy
+  serviceAccount: vertexai-sa
+  labels:
+    app: dataprocessorapp-deploy 
+    version: v1
+  selectorLabels:
+    app: dataprocessorapp-pod
+    version: v1
+  replicas: 1
+  strategyType: RollingUpdate
+  maxSurge: 1
+  maxUnavailable: 0
+  nodeSelector:
+    cloud.google.com/gke-nodepool: worker-pool
+  containers:
+  - name: dataprocessor-app
+    image: "<repo-name>/dataprocessorlib:v1.0"
+    imagePullPolicy: Always
+    memoryRequest: "500Mi"
+    cpuRequest: "500m"
+    memoryLimit: "1Gi"
+    cpuLimit: "1"
+    containerPorts: [6075]
+    envVars:    
+    - name: STORAGELIB_HOST
+      value: http://storageapp-svc.utilities.svc
+    - name: GENAI_TEXTLIB_HOST
+      value: http://genaitextapp-svc.vertexai.svc
+    - name: BIGQUERYLIB_HOST
+      value: http://bigqueryapp-svc.utilities.svc    
+    - name: PROJECT_ID
+      value: <project-id>
+service:
+  name: dataprocessorapp-svc
+  selector:
+    app: dataprocessorapp-pod
+  type: ClusterIP
+  ports:
+  - protocol: TCP
+    name: http
+    port: 80
+    targetPort: 6075

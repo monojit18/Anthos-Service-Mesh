@@ -56,11 +56,15 @@ spec:
         {{ range $containerPort := $container.containerPorts }}
         - containerPort: {{ $containerPort }}
         {{ end }}
+        {{ if $container.envVarsFrom }}
+        envFrom:        
+        {{ toYaml $container.envVarsFrom | nindent 8 }}
+        {{ end }}
         {{ if $container.envVars }}
         env:
         {{ range $env := $container.envVars }}
         - name: {{ $env.name }}
-          value: {{ $env.value }}
+          value: {{ $env.value | quote }}
         {{ end }}
         {{ end }}
       {{ end }}    
